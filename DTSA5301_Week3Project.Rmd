@@ -1,0 +1,133 @@
+---
+title: "Week 3 Project"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r import_data}
+# install r packages
+library(tidyverse)
+library(lubridate)
+library(stringr)
+library(ggplot2)
+
+# read in data
+shooting_incidents <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv")
+```
+
+## Shooting Incidents by Month by Borough
+
+```{r incidents_by_boroughs}
+#compare shooting incidents by borough over time
+incidents_by_boroughs <- shooting_incidents %>%
+  select(-c(INCIDENT_KEY,JURISDICTION_CODE,LOCATION_DESC,STATISTICAL_MURDER_FLAG,X_COORD_CD,Y_COORD_CD,Latitude,Longitude,Lon_Lat)) %>% #show relevant columns
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE)) #formate date column
+
+incidents_by_boroughs$year <- strftime(incidents_by_boroughs$OCCUR_DATE, "%Y") #add column for date
+incidents_by_boroughs$month <- strftime(incidents_by_boroughs$OCCUR_DATE, "%m") #add column for month
+
+incidents_by_boroughs <- incidents_by_boroughs %>% 
+  unite("YEAR_MONTH",
+        c(year, month),
+        sep = "_",
+        na.rm = TRUE,
+        remove = FALSE) %>% #combine month and year columns
+  select(YEAR_MONTH, BORO) %>% #show relevant columns
+  group_by(YEAR_MONTH, BORO) #group columns
+  
+incidents_by_boroughs$BORO <- str_replace_all(incidents_by_boroughs$BORO, 'STATEN ISLAND', 'STATEN_ISLAND') #make "Staten Island" one word
+  
+incidents_by_boroughs <- incidents_by_boroughs %>% 
+  summarize(TOTAL_INCIDENTS = n()) #add column for total incidents per borough per month
+
+#create stacked bar graph
+ggplot(data = incidents_by_boroughs, aes(x = YEAR_MONTH, y = TOTAL_INCIDENTS, fill = factor(BORO))) +
+  geom_bar(stat='identity') +
+    theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) + #place legend at bottom of graph
+  scale_x_discrete(breaks = function(x){x[c(TRUE, FALSE, FALSE, FALSE, FALSE, FALSE)]}) + #label every six months in x axis
+  labs(title = "Shooting Incidents Per Month by Borough", 
+       y = "Total Incidents", 
+       x = "Month & Year", 
+       fill = "Borough") #add labels
+```
+
+This graph shows the seasonal nature of shooting incidents between 2006 and 2021. It appears that the number of shooting incidents decrease in the winter months and rise in the summer. There also seems to be a higher amount of shooting in Brooklyn than any other borough, but this does not take into account population and does not show the average amount of shootings per resident of that borough. There is also an evident rise of shooting incidents in mid-2020.
+
+
+## Shooting Incidents by Race
+
+```{r incidents_by_race}
+#compare race on race shooting incidents
+incidents_by_dem <- shooting_incidents %>%
+    select(c(PERP_AGE_GROUP,PERP_SEX,PERP_RACE,VIC_AGE_GROUP,VIC_SEX,VIC_RACE)) #show relevant columns
+
+incidents_by_dem <- incidents_by_dem[!(incidents_by_dem$VIC_RACE=="UNKNOWN" | incidents_by_dem$PERP_RACE=="UNKNOWN"),] #remove rows with missing or unknowndata (this creates bias!)
+incidents_by_dem <- incidents_by_dem[complete.cases(incidents_by_dem), ] 
+
+incidents_by_race <- incidents_by_dem %>%
+  select(c(PERP_RACE,VIC_RACE)) %>% #show relevant columns
+    unite("PERP_VIC_RACE",
+        c(PERP_RACE,VIC_RACE),
+        sep = " ON ",
+        na.rm = TRUE,
+        remove = FALSE) %>% #combine columns for filtering later
+  add_count(PERP_VIC_RACE) %>% #add column showing total incidents per perp & victim race
+  distinct() %>% #remove duplicates
+  mutate(PERCENTAGE = n / sum(n) * 100) #add column showing percentage of vic race per perp race
+
+incidents_by_race$PERP_RACE <- factor(incidents_by_race$PERP_RACE, levels = c("BLACK", 
+    "WHITE HISPANIC", "BLACK HISPANIC", "WHITE", "ASIAN / PACIFIC ISLANDER", "AMERICAN INDIAN/ALASKAN NATIVE")) #rearrange order of perp races for ggplot
+
+#create stacked bar chart showing percentage of victim races shot by perp race
+ggplot(data = incidents_by_race, aes(x = reorder(VIC_RACE,n), y = PERCENTAGE, fill = factor(PERP_RACE))) +
+  geom_bar(stat='identity') + 
+  coord_flip() + #turn chart 90 degrees
+    theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) + #place legend at bottom of graph
+  labs(title = "Shooting Incidents by Race", 
+       y = "Percentage of Shooting Incidents", 
+       x = "Perp Race", 
+       fill = "Victim Race") #add labels
+```
+
+This graph shows the percentage of shooting incidents committed by each race and the breakdown of the amount of people of different races shot by each race. This breakdown does not take into account the demographics of New York, including how many people of each race reside in the city. This also may be biased because of missing data within the dataset. Many shooting incidents did not include the race of the perp and many factors within the police system may allow for certain races to be less likely to be recorded creating more bias.
+
+``` {r race_on_race_incidents}
+#focus in on shooting incidents b/w 2 people of the same race
+incidents_by_race <- incidents_by_dem %>%
+  select(c(PERP_RACE,VIC_RACE)) %>% #show relevant columns
+    unite("PERP_VIC_RACE",
+        c(PERP_RACE,VIC_RACE),
+        sep = " ON ",
+        na.rm = TRUE,
+        remove = FALSE) %>% #combine columns for filtering later
+  add_count(PERP_VIC_RACE) %>% #add column showing number of incidents involving each combination of races
+  add_count(PERP_RACE) %>% #add column showing number of incidents involving each perp race
+  mutate(PERCENTAGE = n / nn * 100) %>% #calculate percentage of incidents involving each combination of races per total incidents involving perp of each race
+  mutate(RACE_ON_RACE = PERP_RACE == VIC_RACE) %>% #show whether races of perp and victim are the same
+  distinct() #remove duplicates
+
+incidents_by_race <- incidents_by_race[!(incidents_by_race$RACE_ON_RACE=="FALSE" | incidents_by_race$PERP_RACE=="UNKNOWN"),] #remove rows of incidents involving people of two different races and where perp race is unknown
+
+#create chart showing the percentage of shooting incidents committed by each race that involves a victim of the same race & create model showing prediction line
+mod <- lm(n ~ nn, data = incidents_by_race)
+incidents_by_race_w_pred <- incidents_by_race %>% mutate(pred = predict(mod))
+incidents_by_race_w_pred %>% ggplot() +
+  geom_point(aes(x = nn, y = n), color = "blue") + #add points showing data
+  geom_line(aes(x = nn, y = pred), color = "red") + #add prediction line
+  labs(title = "Race on Race Shooting Incidents", 
+       y = "Shooting Incidents Inv. People of the Same Race", 
+       x = "Total Shooting Incidents Per Race") #add labels
+
+#create bar graph showing the percentage of shooting incidents committed by each race that involves a victim of the same race
+ggplot(data = incidents_by_race, aes(x = reorder(PERP_RACE,PERCENTAGE), y = PERCENTAGE)) +
+  geom_bar(stat='identity') + 
+    theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) + #place legend at bottom of graph
+  labs(title = "Shooting Incidents by Race", 
+       y = "% of Victims w/ Same Race as Perp", 
+       x = "Perp Race") #add labels
+```
+
+I wanted to show the percentage of shooting incidents that were committed between two people of the same race for each race and see if there was a pattern. At first, it looked like the percentage was similar among all races and could be predicted but looking at the second graph, it appears that these percentages vary. There may be bias due to the fact that this data does not take into account people of mixed races as well as the amount of missing data pertaining to perp race.
